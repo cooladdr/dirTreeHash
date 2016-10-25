@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,7 +21,7 @@ func ComputingHash(dirs []string) (hashFile string) {
 
 	for _, dir := range dirs {
 		wait.Add(1)
-		go walkDir(dir, &wait, hashStr)
+		go walkDir2(dir, &wait, hashStr)
 	}
 
 	//等待所有goroutine完成，然后关闭channel
@@ -62,21 +63,25 @@ func getHash(file string) []byte {
 	return h.Sum(nil)
 }
 
+type ignoreFiles struct {
+	ignores map[string]bool
+}
+
 //读取需要被忽略的文件，由于时间关系没有实现通配符忽略文件
-func getIgnoreFiles(dir string) map[string]bool {
+func (i *ignoreFiles) readIgnoreFiles(dir string) {
 	ignorefile := filepath.Join(dir, ".sha1Ignore")
 	f, err := os.Open(ignorefile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return
 		}
 		panic("read .sha1Ignore file error")
 	}
 	defer f.Close()
 
 	rb := bufio.NewReader(f)
-	ignores := make(map[string]bool)
-	ignores[".sha1Ignore"] = true
+	i.ignores = make(map[string]bool)
+	i.ignores[".sha1Ignore"] = true
 	for {
 		line, _, err := rb.ReadLine()
 		if err != nil || io.EOF == err {
@@ -85,56 +90,57 @@ func getIgnoreFiles(dir string) map[string]bool {
 			}
 			panic("read lines of .sha1Ignore file error")
 		}
-		ignores[string(line)] = true
+		i.ignores[string(line)] = true
 	}
-	return ignores
 }
 
-func walkDir(dir string, wait *sync.WaitGroup, hashStr chan<- string) {
+func (i *ignoreFiles) canIgnore(filePath string) bool {
+	if i.ignores == nil {
+		return false
+	}
+
+	for name, state := range i.ignores {
+		if state && strings.HasPrefix(strings.Replace(filePath, "\\", "/", -1), name) {
+			return true
+		}
+	}
+
+	return false
+}
+
+var sema2 = make(chan struct{}, 30)
+
+func walkDir2(dir string, wait *sync.WaitGroup, hashStr chan<- string) {
 	defer wait.Done()
 
-	ignores := getIgnoreFiles(dir)
-	for _, entry := range dirents(dir) {
-		//忽略文件
-		name := entry.Name()
-		if ignores != nil && ignores[name] {
-			continue
+	ignore := new(ignoreFiles)
+	ignore.readIgnoreFiles(dir)
+
+	filepath.Walk(dir, func(path string, fi os.FileInfo, err error) error {
+		if fi.IsDir() {
+			return nil
 		}
 
-		if entry.IsDir() {
-			wait.Add(1)
-			subdir := filepath.Join(dir, name)
-			go walkDir(subdir, wait, hashStr)
-		} else {
-			fileFullName := filepath.Join(dir, name)
-			fileSize := entry.Size()
-			fileHash := getHash(fileFullName)
-			hashStr <- fmt.Sprintf("%s, %x, %d\n", fileFullName, fileHash, fileSize)
+		if err != nil {
+			fmt.Println(err)
+			return nil
 		}
-	}
-}
 
-// 用channel模拟信号量，控制goroutine的数量为15，
-//防止文件打开过多而使用系统崩溃
-var sema = make(chan struct{}, 15)
+		if ignore.canIgnore(path) {
+			return nil
+		}
 
-//读取文件或目录的基本信息
-func dirents(dir string) []os.FileInfo {
-	//读取信息量
-	sema <- struct{}{}
-	//使用完后，释放信号量
-	defer func() { <-sema }()
+		wait.Add(1)
+		go func(goPath string, fileInfo os.FileInfo, goHashStr chan<- string) {
+			defer wait.Done()
+			sema2 <- struct{}{}
+			defer func() { <-sema2 }()
 
-	f, err := os.Open(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Open error: %v\n", err)
+			fileSize := fileInfo.Size()
+			fileHash := getHash(goPath)
+			goHashStr <- fmt.Sprintf("%s, %x, %d\n", goPath, fileHash, fileSize)
+		}(path, fi, hashStr)
+
 		return nil
-	}
-	defer f.Close()
-
-	entries, err := f.Readdir(0)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Readdir error: %v\n", err)
-	}
-	return entries
+	})
 }
