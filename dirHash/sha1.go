@@ -46,7 +46,7 @@ func ComputingHash(dirs []string) (hashFile string) {
 	return outFilePath
 }
 
-func getHash(file string) []byte {
+func getHash(file string) (hashVal []byte, err error) {
 	f, err := os.Open(file)
 	if err != nil {
 		fmt.Printf("Open:%s error", file)
@@ -55,12 +55,30 @@ func getHash(file string) []byte {
 	defer f.Close()
 
 	h := sha1.New()
-	_, err = io.Copy(h, f)
-	if err != nil {
-		panic(err)
+	buf := make([]byte, 32*1024)
+	for {
+		nr, er := f.Read(buf)
+		if nr > 0 {
+			nw, ew := h.Write(buf[0:nr])
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er == io.EOF {
+			break
+		}
+		if er != nil {
+			err = er
+			break
+		}
 	}
 
-	return h.Sum(nil)
+	return h.Sum(nil), err
 }
 
 type ignoreFiles struct {
@@ -137,7 +155,10 @@ func walkDir2(dir string, wait *sync.WaitGroup, hashStr chan<- string) {
 			defer func() { <-sema2 }()
 
 			fileSize := fileInfo.Size()
-			fileHash := getHash(goPath)
+			fileHash, err := getHash(goPath)
+			if err != nil {
+				panic(err)
+			}
 			goHashStr <- fmt.Sprintf("%s, %x, %d\n", goPath, fileHash, fileSize)
 		}(path, fi, hashStr)
 
