@@ -109,7 +109,7 @@ func walkDir(dir string, wait *sync.WaitGroup, hashStr chan<- string) {
 			fileFullName := filepath.Join(dir, name)
 			fileSize := entry.Size()
 			fileHash := getHash(fileFullName)
-			hashStr <- fmt.Sprintf("%s, %v, %d\n", fileFullName, fileHash, fileSize)
+			hashStr <- fmt.Sprintf("%s, %x, %d\n", fileFullName, fileHash, fileSize)
 		}
 	}
 }
