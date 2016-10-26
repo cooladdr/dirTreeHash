@@ -55,28 +55,7 @@ func getHash(file string) (hashVal []byte, err error) {
 	defer f.Close()
 
 	h := sha1.New()
-	buf := make([]byte, 32*1024)
-	for {
-		nr, er := f.Read(buf)
-		if nr > 0 {
-			nw, ew := h.Write(buf[0:nr])
-			if ew != nil {
-				err = ew
-				break
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
-			}
-		}
-		if er == io.EOF {
-			break
-		}
-		if er != nil {
-			err = er
-			break
-		}
-	}
+	io.Copy(h, f)
 
 	return h.Sum(nil), err
 }
