@@ -148,11 +148,12 @@ func walkDir2(dir string, wait *sync.WaitGroup, hashStr chan<- string) {
 			return nil
 		}
 
+		sema2 <- struct{}{}
+		defer func() { <-sema2 }()
+
 		wait.Add(1)
 		go func(goPath string, fileInfo os.FileInfo, goHashStr chan<- string) {
 			defer wait.Done()
-			sema2 <- struct{}{}
-			defer func() { <-sema2 }()
 
 			fileSize := fileInfo.Size()
 			fileHash, err := getHash(goPath)
